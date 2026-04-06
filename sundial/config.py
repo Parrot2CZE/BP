@@ -5,11 +5,15 @@ import pathlib
 TZ = ZoneInfo("Europe/Prague")
 
 # LED pásek
-TOTAL_LED_COUNT = 15          # počet FUNKČNÍCH LED
+TOTAL_LED_COUNT = 64          # celkový počet LED na pásku
 LED_PIN = 18                  # GPIO18 (pin 12)
 LED_BRIGHTNESS = 128
 LED_DMA = 10
 LED_CHANNEL = 0
+
+# Aktivní rozsah LED pro hodiny
+ACTIVE_LED_START = 40         # první používaná LED
+ACTIVE_LED_END = 63           # poslední používaná LED
 
 # Tlačítko
 BUTTON_PIN = 20               # GPIO20 = pin 38, druhá noha na GND (pin 39)
