@@ -11,7 +11,7 @@ class SundialController:
         self.enabled = True
         self.use_pir = True
 
-        self.rgb = {"r": 255, "g": 0, "b": 0}
+        self.rgb = {"r": 255, "g": 140, "b": 0}
 
         self.last_motion = False
         self.last_motion_text = "Neznámý"

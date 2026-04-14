@@ -27,6 +27,7 @@ config_mode = False        # True = nastavujeme barvu
 config_channel = None      # "r" / "g" / "b"
 last_button_state = 1
 pir_active = None          # stav podle PIR
+last_pot_led_rgb = None
 
 # chytré čtení potenciometru
 pot_raw_last = None
@@ -45,18 +46,16 @@ def _reset_pot_tracking(initial_val):
 
 # ---------- režim konfigurace barvy ----------
 
-def enter_config_mode(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip):
+def enter_config_mode(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, controller: SundialController):
     global config_mode, config_channel
     config_mode = True
     config_channel = "r"
     print("=== VSTUP DO REŽIMU NASTAVENÍ BARVY (R) ===")
 
-    with rgb_lock:
-        val = rgb["r"]
+    val, _, _ = controller.get_rgb()
 
     _reset_pot_tracking(val)
     pot.set_led_color(val, 0, 0)
-
     epaper.refresh_config("r", val)
 
 
@@ -109,7 +108,7 @@ def handle_button_press(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, con
 # ---------- hlavní smyčka ----------
 
 def main_loop(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, pir: PirSensor, controller: SundialController):
-    global last_button_state, pot_raw_last, pot_displayed_val, pot_last_change_time, pir_active
+    global last_button_state, pot_raw_last, pot_displayed_val, pot_last_change_time, pir_active, last_pot_led_rgb
 
     last_button_state = GPIO.input(BUTTON_PIN)
     print(f"[INIT] BUTTON initial state = {last_button_state} (1 = uvolněno)")
@@ -125,10 +124,12 @@ def main_loop(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, pir: PirSenso
         now_dt = datetime.datetime.now(TZ)
         strip.show_single_led_for_hour(now_dt, r, g, b)
         pot.set_led_color(r, g, b)
+        last_pot_led_rgb = (r, g, b)
         print("[PIR] Při startu detekován pohyb -> hodiny AKTIVNÍ")
     else:
         strip.clear()
         pot.set_led_color(0, 0, 0)
+        last_pot_led_rgb = (0, 0, 0)
         print("[PIR] Při startu bez pohybu -> hodiny ZHASNUTÉ")
 
     last_minute = None
@@ -141,14 +142,15 @@ def main_loop(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, pir: PirSenso
         use_pir = controller.is_pir_enabled()
         r, g, b = controller.get_rgb()
 
-        pir_state = pir.poll()
-        motion_detected = (pir_state == GPIO.HIGH)
-        controller.set_motion(motion_detected)
+        # Synchronizace LED v potenciometru při změně RGB z webu
+        if pir_active and not config_mode:
+            desired_pot_rgb = (r, g, b)
+        else:
+            desired_pot_rgb = None
 
-        # PIR – aktuální stav přítomnosti
-        enabled = controller.is_enabled()
-        use_pir = controller.is_pir_enabled()
-        r, g, b = controller.get_rgb()
+        if desired_pot_rgb is not None and desired_pot_rgb != last_pot_led_rgb:
+            pot.set_led_color(*desired_pot_rgb)
+            last_pot_led_rgb = desired_pot_rgb
 
         pir_state = pir.poll()
         motion_detected = (pir_state == GPIO.HIGH)
@@ -159,7 +161,7 @@ def main_loop(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, pir: PirSenso
         elif use_pir:
             current_active = motion_detected
         else:
-           current_active = True
+            current_active = True
 
         # změna stavu podle PIR / webu
         if current_active != pir_active:
@@ -169,35 +171,36 @@ def main_loop(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, pir: PirSenso
                 print("[PIR] Aktivace hodin")
                 strip.show_single_led_for_hour(now_dt, r, g, b)
                 pot.set_led_color(r, g, b)
-        
-            if config_mode and config_channel is not None:
-                if config_channel == "r":
-                    val, _, _ = controller.get_rgb()
-                elif config_channel == "g":
-                    _, val, _ = controller.get_rgb()
-                elif config_channel == "b":
-                    _, _, val = controller.get_rgb()
+                last_pot_led_rgb = (r, g, b)
+
+                if config_mode and config_channel is not None:
+                    if config_channel == "r":
+                        val, _, _ = controller.get_rgb()
+                    elif config_channel == "g":
+                        _, val, _ = controller.get_rgb()
+                    elif config_channel == "b":
+                        _, _, val = controller.get_rgb()
+                    else:
+                        val = 0
+
+                    epaper.refresh_config(config_channel, val)
                 else:
-                    val = 0
+                    epaper.refresh_time()
 
-                epaper.refresh_config(config_channel, val)
             else:
-                epaper.refresh_time()
+                print("[PIR] Deaktivace hodin")
+                strip.clear()
+                pot.set_led_color(0, 0, 0)
+                last_pot_led_rgb = (0, 0, 0)
 
-        else:
-            print("[PIR] Deaktivace hodin")
-            strip.clear()
-            pot.set_led_color(0, 0, 0)
-
-# pokud nejsou hodiny aktivní, nic dalšího neděláme
+        # pokud nejsou hodiny aktivní, nic dalšího neděláme
         if not pir_active:
             time.sleep(0.05)
             continue
 
         # titulní režim: jedna LED podle času + refresh času na displeji po minutě
         if not config_mode:
-            with rgb_lock:
-                r, g, b = rgb["r"], rgb["g"], rgb["b"]
+            r, g, b = controller.get_rgb()
             strip.show_single_led_for_hour(now_dt, r, g, b)
 
             if last_minute is None or now_dt.minute != last_minute:
