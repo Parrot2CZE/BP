@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Interiérové sluneční hodiny</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@simonwep/pickr/dist/themes/classic.min.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero card">
+      <div>
+        <h1>Interiérové sluneční hodiny</h1>
+        <p class="subtitle">Lokální webové rozhraní pro ovládání zařízení</p>
+      </div>
+      <button class="secondary" onclick="loadState()">Obnovit stav</button>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Stav zařízení</h2>
+        <div class="status-list">
+          <div class="status-row"><span>Čas zařízení</span><strong id="device_time">—</strong></div>
+          <div class="status-row"><span>Zapnuto</span><strong id="enabled_text">—</strong></div>
+          <div class="status-row"><span>PIR režim</span><strong id="pir_text">—</strong></div>
+          <div class="status-row"><span>Pohyb</span><strong id="motion_text">—</strong></div>
+          <div class="status-row"><span>Poslední změna PIR</span><strong id="last_motion_text">—</strong></div>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Napájení a režim</h2>
+        <div class="button-row">
+          <button onclick="setEnabled(true)">Zapnout</button>
+          <button class="danger" onclick="setEnabled(false)">Vypnout</button>
+        </div>
+        <label class="checkbox-row">
+          <input type="checkbox" id="use_pir" onchange="setPir()">
+          <span>Aktivní PIR řízení</span>
+        </label>
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Raw stav</h2>
+      <pre id="state_raw" class="raw-box">Načítám…</pre>
+    </section>
+
+    <section class="card">
+      <h2>Nastavení barvy</h2>
+      <div class="color-layout">
+        <div class="sliders-panel">
+          <div class="slider-row">
+            <label for="r">Červená</label>
+            <div class="slider-line">
+              <input type="range" id="r" min="0" max="255" value="255">
+              <span id="r_val" class="slider-value">255</span>
+            </div>
+          </div>
+          <div class="slider-row">
+            <label for="g">Zelená</label>
+            <div class="slider-line">
+              <input type="range" id="g" min="0" max="255" value="0">
+              <span id="g_val" class="slider-value">0</span>
+            </div>
+          </div>
+          <div class="slider-row">
+            <label for="b">Modrá</label>
+            <div class="slider-line">
+              <input type="range" id="b" min="0" max="255" value="0">
+              <span id="b_val" class="slider-value">0</span>
+            </div>
+          </div>
+          <div class="button-row color-button-row">
+            <button onclick="sendRgb()">Nastavit RGB</button>
+          </div>
+        </div>
+
+        <div class="picker-panel">
+          <div id="pickr"></div>
+          <div class="picker-preview-row">
+            <div id="color_preview" class="color-preview"></div>
+          </div>
+          <div class="rgb-inputs">
+            <div class="rgb-box">
+              <input type="number" id="r_num" min="0" max="255" value="255">
+              <span>R</span>
+            </div>
+            <div class="rgb-box">
+              <input type="number" id="g_num" min="0" max="255" value="0">
+              <span>G</span>
+            </div>
+            <div class="rgb-box">
+              <input type="number" id="b_num" min="0" max="255" value="0">
+              <span>B</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@simonwep/pickr/dist/pickr.min.js"></script>
+</body>
+</html>

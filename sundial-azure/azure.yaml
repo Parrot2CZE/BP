@@ -1,0 +1,6 @@
+name: sundial
+services:
+  api:
+    project: ./api
+    language: python
+    host: function
