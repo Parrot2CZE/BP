@@ -1,3 +1,5 @@
+const API_BASE = "https://func-sundial-waal5652j36s6.azurewebsites.net";
+
 let pickr = null;
 let suppressPickerEvent = false;
 
@@ -71,7 +73,7 @@ function initPickr() {
 }
 
 async function loadState() {
-  const res = await fetch('/api/state');
+  const res = await fetch(`${API_BASE}/api/state`);
   const data = await res.json();
   document.getElementById('state_raw').textContent = JSON.stringify(data, null, 2);
   document.getElementById('device_time').textContent = data.device_time;
@@ -84,21 +86,21 @@ async function loadState() {
 }
 
 async function setEnabled(enabled) {
-  await fetch('/api/enabled', { method: 'POST',
+  await fetch(`${API_BASE}/api/enabled`, { method: 'POST',
     headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ enabled }) });
   await loadState();
 }
 
 async function setPir() {
   const use_pir = document.getElementById('use_pir').checked;
-  await fetch('/api/pir', { method: 'POST',
+  await fetch(`${API_BASE}/api/pir`, { method: 'POST',
     headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ use_pir }) });
   await loadState();
 }
 
 async function sendRgb() {
   const { r, g, b } = getCurrentRgb();
-  await fetch('/api/rgb', { method: 'POST',
+  await fetch(`${API_BASE}/api/rgb`, { method: 'POST',
     headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ r, g, b }) });
   await loadState();
 }

@@ -9,6 +9,7 @@ import RPi.GPIO as GPIO
 
 from .controller import SundialController
 from .webapp import create_app
+from .azure_sync import AzureSync
 
 from .config import TZ, BUTTON_PIN
 from .led_strip import LedStrip
@@ -107,7 +108,8 @@ def handle_button_press(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, con
 
 # ---------- hlavní smyčka ----------
 
-def main_loop(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, pir: PirSensor, controller: SundialController):
+def main_loop(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, pir: PirSensor,
+              controller: SundialController, azure_sync: AzureSync):
     global last_button_state, pot_raw_last, pot_displayed_val, pot_last_change_time, pir_active, last_pot_led_rgb
 
     last_button_state = GPIO.input(BUTTON_PIN)
@@ -135,6 +137,7 @@ def main_loop(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, pir: PirSenso
     last_minute = None
 
     while True:
+        azure_sync.tick()
         now_dt = datetime.datetime.now(TZ)
 
         # PIR – aktuální stav přítomnosti
@@ -272,8 +275,10 @@ def main():
     strip = LedStrip()
     pot = RGBPot()
     epaper = EpaperDisplay()
-    pir = PirSensor()  # použije výchozí PIR_PIN z configu
+    pir = PirSensor()
     controller = SundialController()
+    azure_sync = AzureSync(controller)
+
     app = create_app(controller)
     web_thread = threading.Thread(
         target=lambda: app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False),
@@ -285,7 +290,7 @@ def main():
     strip.selftest()
 
     try:
-        main_loop(epaper, pot, strip, pir, controller)
+        main_loop(epaper, pot, strip, pir, controller, azure_sync)
     except KeyboardInterrupt:
         print("Ukončuji...")
     finally:

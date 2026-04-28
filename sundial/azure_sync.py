@@ -1,15 +1,18 @@
 """
 sundial/azure_sync.py
 =====================
-Nahrazuje lokální Flask webapp.
 RPi každé POLL_INTERVAL sekund:
   1. stáhne stav z Azure Functions  → aplikuje na hardware (controller)
   2. pushne device_time + last_motion zpět do Azure
+
+HTTP volání běží ve vlákně na pozadí – hlavní smyčka hodin
+není blokována ani při dlouhém cold startu Azure Functions.
 """
 
 import datetime
 import logging
 import os
+import threading
 import time
 
 import requests
@@ -18,51 +21,41 @@ from .config import TZ
 
 log = logging.getLogger("azure_sync")
 
-# URL Azure Functions – nastav přes env proměnnou nebo přímo zde.
-# Příklad: "https://func-sundial-abc123.azurewebsites.net"
-AZURE_API_URL = os.getenv("SUNDIAL_API_URL", "https://YOUR_FUNC_APP.azurewebsites.net")
+AZURE_API_URL   = os.getenv("SUNDIAL_API_URL", "https://YOUR_FUNC_APP.azurewebsites.net")
 
-POLL_INTERVAL = 2.0   # sekund mezi staženími stavu
-PUSH_INTERVAL = 5.0   # sekund mezi pushem live dat (device_time, pohyb)
-REQUEST_TIMEOUT = 3   # timeout HTTP požadavku v sekundách
+POLL_INTERVAL   = 5.0    # sekund mezi staženími stavu
+PUSH_INTERVAL   = 10.0   # sekund mezi pushem live dat
+REQUEST_TIMEOUT = 15     # timeout pro jeden HTTP požadavek (cold start ~10-30s)
 
 
 class AzureSync:
-    """
-    Synchronizuje stav mezi Azure Storage Table a lokálním controllerem.
-
-    Použití v main.py:
-        sync = AzureSync(controller)
-        # V hlavní smyčce každé 2s:
-        sync.tick()
-    """
-
     def __init__(self, controller):
         self.controller = controller
         self._last_poll = 0.0
         self._last_push = 0.0
         self._session = requests.Session()
         self._session.headers.update({"Content-Type": "application/json"})
+        self._lock = threading.Lock()
+        self._busy = False   # právě běží HTTP volání
         log.info("AzureSync init, API: %s", AZURE_API_URL)
 
-    # ── Veřejné API ───────────────────────────────────────────────────────────
-
     def tick(self):
-        """Zavolej jednou za iteraci hlavní smyčky (~20ms)."""
+        """Zavolej jednou za iteraci hlavní smyčky (~20ms). Neblokuje."""
         now = time.monotonic()
 
         if now - self._last_poll >= POLL_INTERVAL:
-            self._poll()
             self._last_poll = now
+            self._run_in_background(self._poll)
 
         if now - self._last_push >= PUSH_INTERVAL:
-            self._push()
             self._last_push = now
+            self._run_in_background(self._push)
 
-    # ── Interní metody ────────────────────────────────────────────────────────
+    def _run_in_background(self, fn):
+        t = threading.Thread(target=fn, daemon=True)
+        t.start()
 
     def _poll(self):
-        """Stáhne stav z Azure a aplikuje ho na controller."""
         try:
             resp = self._session.get(
                 f"{AZURE_API_URL}/api/state",
@@ -82,12 +75,14 @@ class AzureSync:
 
             log.debug("Poll OK: enabled=%s pir=%s rgb=%s",
                       data.get("enabled"), data.get("use_pir"), rgb)
+            print(f"[AZURE] Poll OK – RGB({rgb.get('r')},{rgb.get('g')},{rgb.get('b')}) "
+                  f"enabled={data.get('enabled')} pir={data.get('use_pir')}")
 
         except requests.RequestException as e:
             log.warning("Poll failed: %s", e)
+            print(f"[AZURE] Poll failed: {e}")
 
     def _push(self):
-        """Pushne živý stav RPi (čas, pohyb) do Azure."""
         try:
             state = self.controller.get_state()
             now_str = datetime.datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -102,6 +97,8 @@ class AzureSync:
                 timeout=REQUEST_TIMEOUT,
             )
             log.debug("Push OK: device_time=%s", now_str)
+            print(f"[AZURE] Push OK – device_time={now_str}")
 
         except requests.RequestException as e:
             log.warning("Push failed: %s", e)
+            print(f"[AZURE] Push failed: {e}")
