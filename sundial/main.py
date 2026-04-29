@@ -47,10 +47,12 @@ def _reset_pot_tracking(initial_val):
 
 # ---------- režim konfigurace barvy ----------
 
-def enter_config_mode(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, controller: SundialController):
+def enter_config_mode(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip,
+                      controller: SundialController, azure_sync: AzureSync):
     global config_mode, config_channel
     config_mode = True
     config_channel = "r"
+    azure_sync.set_config_mode(True)
     print("=== VSTUP DO REŽIMU NASTAVENÍ BARVY (R) ===")
 
     val, _, _ = controller.get_rgb()
@@ -60,7 +62,8 @@ def enter_config_mode(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, contr
     epaper.refresh_config("r", val)
 
 
-def advance_config_channel(epaper: EpaperDisplay, pot: RGBPot, controller: SundialController):
+def advance_config_channel(epaper: EpaperDisplay, pot: RGBPot,
+                           controller: SundialController, azure_sync: AzureSync):
     global config_channel
 
     if config_channel == "r":
@@ -80,30 +83,35 @@ def advance_config_channel(epaper: EpaperDisplay, pot: RGBPot, controller: Sundi
         epaper.refresh_config("b", val)
 
     elif config_channel == "b":
-        exit_config_mode(epaper, pot, controller)
+        exit_config_mode(epaper, pot, controller, azure_sync)
 
 
-def exit_config_mode(epaper: EpaperDisplay, pot: RGBPot, controller: SundialController):
+def exit_config_mode(epaper: EpaperDisplay, pot: RGBPot,
+                     controller: SundialController, azure_sync: AzureSync):
     global config_mode, config_channel
     config_mode = False
     config_channel = None
+    azure_sync.set_config_mode(False)
     print("=== KONEC NASTAVOVÁNÍ BARVY ===")
 
     r, g, b = controller.get_rgb()
-
     pot.set_led_color(r, g, b)
+
+    # okamžitě pushni novou barvu do Azure
+    azure_sync.push_rgb_now()
 
     # displej zpět na čas
     epaper.refresh_time()
 
 
-def handle_button_press(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, controller: SundialController):
+def handle_button_press(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip,
+                        controller: SundialController, azure_sync: AzureSync):
     if not config_mode:
         print("[BTN] klik mimo config -> enter_config_mode()")
-        enter_config_mode(epaper, pot, strip, controller)
+        enter_config_mode(epaper, pot, strip, controller, azure_sync)
     else:
         print("[BTN] klik v config -> advance_config_channel()")
-        advance_config_channel(epaper, pot, controller)
+        advance_config_channel(epaper, pot, controller, azure_sync)
 
 
 # ---------- hlavní smyčka ----------
@@ -217,7 +225,7 @@ def main_loop(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, pir: PirSenso
             print("Tlačítko =", cur)
             if cur == GPIO.LOW:
                 print("[BTN] STISK")
-                handle_button_press(epaper, pot, strip, controller)
+                handle_button_press(epaper, pot, strip, controller, azure_sync)
             else:
                 print("[BTN] UVOLNĚNÍ")
             last_button_state = cur
