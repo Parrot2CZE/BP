@@ -1,5 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+sundial/main.py
+===============
+Vstupní bod aplikace a hlavní řídicí smyčka.
+
+Architektura:
+  - SundialController  – sdílený stav (RGB, enabled, PIR, pohyb)
+  - AzureSync          – synchronizace se vzdáleným API (poll + push ve vláknech)
+  - LedStrip           – WS281x LED pásek (24 LED, 12 hodin × 2 půlhodiny)
+  - RGBPot             – RGB potenciometr (IO expander PIM523)
+  - EpaperDisplay      – e-ink displej 2.13" (čas / config screen)
+  - PirSensor          – HC-SR501 pohybový senzor
+  - Tlačítko (GPIO)    – vstup do config režimu + přepínání R/G/B kanálů
+
+Lokální Flask web byl záměrně odstraněn – ovládání probíhá výhradně
+přes Azure Functions + static frontend (sundial-azure/).
+"""
 
 import time
 import datetime
@@ -8,7 +25,6 @@ import threading
 import RPi.GPIO as GPIO
 
 from .controller import SundialController
-from .webapp import create_app
 from .azure_sync import AzureSync
 
 from .config import TZ, BUTTON_PIN
@@ -19,51 +35,70 @@ from .time_sync import sync_time_at_start
 from .pir_sensor import PirSensor
 
 
-# ---------- globální stav aplikace (non-hw) ----------
+# ──────────────────────────────────────────────
+# Globální stav config režimu
+# (config režim = fyzické nastavení RGB přes potenciometr)
+# ──────────────────────────────────────────────
 
-rgb_lock = threading.Lock()
-rgb = {"r": 255, "g": 0, "b": 0}
+config_mode    = False   # True = probíhá nastavování barvy tlačítkem + potíkem
+config_channel = None    # aktuálně nastavovaný kanál: "r" / "g" / "b"
+last_button_state = 1    # GPIO pull-up → klidový stav je 1
 
-config_mode = False        # True = nastavujeme barvu
-config_channel = None      # "r" / "g" / "b"
-last_button_state = 1
-pir_active = None          # stav podle PIR
+# Pamatujeme si, jakou barvu jsme naposledy poslali do LED v potíku,
+# abychom zbytečně nepřepisovali stejnou hodnotu.
 last_pot_led_rgb = None
 
-# chytré čtení potenciometru
-pot_raw_last = None
-pot_displayed_val = None
-pot_last_change_time = 0.0
-POT_STABLE_SEC = 1.0
-POT_JITTER_TOL = 3
+# ──────────────────────────────────────────────
+# Sledování potenciometru (anti-jitter + stabilizace)
+# ──────────────────────────────────────────────
+
+pot_raw_last        = None   # poslední surová hodnota z ADC
+pot_displayed_val   = None   # hodnota naposledy zobrazená / uložená
+pot_last_change_time = 0.0   # monotonic timestamp poslední změny
+
+POT_STABLE_SEC = 1.0   # jak dlouho musí být hodnota stabilní, než ji přijmeme
+POT_JITTER_TOL = 3     # o kolik se smí pohybovat ADC bez toho, aby se to počítalo jako změna
 
 
-def _reset_pot_tracking(initial_val):
+def _reset_pot_tracking(initial_val: int):
+    """Resetuje sledování potenciometru na danou počáteční hodnotu.
+    Voláme při vstupu do config kanálu, aby se předchozí pozice nebrala jako změna."""
     global pot_raw_last, pot_displayed_val, pot_last_change_time
-    pot_raw_last = initial_val
-    pot_displayed_val = initial_val
+    pot_raw_last         = initial_val
+    pot_displayed_val    = initial_val
     pot_last_change_time = time.monotonic()
 
 
-# ---------- režim konfigurace barvy ----------
+# ──────────────────────────────────────────────
+# Config režim – vstup / přepínání kanálů / výstup
+# ──────────────────────────────────────────────
 
 def enter_config_mode(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip,
                       controller: SundialController, azure_sync: AzureSync):
+    """
+    Vstoupí do config režimu na kanálu R.
+    AzureSync dostane příznak, aby nepřepisoval RGB z cloudu,
+    dokud uživatel fyzicky nastavuje hodnotu.
+    """
     global config_mode, config_channel
-    config_mode = True
+    config_mode    = True
     config_channel = "r"
     azure_sync.set_config_mode(True)
     print("=== VSTUP DO REŽIMU NASTAVENÍ BARVY (R) ===")
 
     val, _, _ = controller.get_rgb()
-
     _reset_pot_tracking(val)
-    pot.set_led_color(val, 0, 0)
+    pot.set_led_color(val, 0, 0)   # potík svítí čistě červeně jako indikace
     epaper.refresh_config("r", val)
 
 
 def advance_config_channel(epaper: EpaperDisplay, pot: RGBPot,
                            controller: SundialController, azure_sync: AzureSync):
+    """
+    Přepne na další kanál (R → G → B → exit).
+    Při každém přepnutí se potenciometr nastaví na aktuální hodnotu daného kanálu,
+    takže první pohyb vždy vychází ze skutečné hodnoty, ne z nuly.
+    """
     global config_channel
 
     if config_channel == "r":
@@ -83,29 +118,33 @@ def advance_config_channel(epaper: EpaperDisplay, pot: RGBPot,
         epaper.refresh_config("b", val)
 
     elif config_channel == "b":
+        # poslední kanál → ukončení config režimu
         exit_config_mode(epaper, pot, controller, azure_sync)
 
 
 def exit_config_mode(epaper: EpaperDisplay, pot: RGBPot,
                      controller: SundialController, azure_sync: AzureSync):
+    """
+    Ukončí config režim:
+      - potík se vrátí na výslednou barvu
+      - nová barva se okamžitě pushne do Azure
+      - displej zobrazí zpět čas
+    """
     global config_mode, config_channel
-    config_mode = False
+    config_mode    = False
     config_channel = None
     azure_sync.set_config_mode(False)
     print("=== KONEC NASTAVOVÁNÍ BARVY ===")
 
     r, g, b = controller.get_rgb()
     pot.set_led_color(r, g, b)
-
-    # okamžitě pushni novou barvu do Azure
-    azure_sync.push_rgb_now()
-
-    # displej zpět na čas
+    azure_sync.push_rgb_now()   # push mimo pravidelný interval, aby se změna neztratila
     epaper.refresh_time()
 
 
 def handle_button_press(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip,
                         controller: SundialController, azure_sync: AzureSync):
+    """Obsluha stisku tlačítka: mimo config → vstup, uvnitř config → další kanál."""
     if not config_mode:
         print("[BTN] klik mimo config -> enter_config_mode()")
         enter_config_mode(epaper, pot, strip, controller, azure_sync)
@@ -114,20 +153,21 @@ def handle_button_press(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip,
         advance_config_channel(epaper, pot, controller, azure_sync)
 
 
-# ---------- hlavní smyčka ----------
+# ──────────────────────────────────────────────
+# Hlavní smyčka (~50 Hz, tj. iterace každých ~20 ms)
+# ──────────────────────────────────────────────
 
 def main_loop(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, pir: PirSensor,
               controller: SundialController, azure_sync: AzureSync):
-    global last_button_state, pot_raw_last, pot_displayed_val, pot_last_change_time, pir_active, last_pot_led_rgb
+    global last_button_state, pot_raw_last, pot_displayed_val, pot_last_change_time
+    global pir_active, last_pot_led_rgb
 
     last_button_state = GPIO.input(BUTTON_PIN)
     print(f"[INIT] BUTTON initial state = {last_button_state} (1 = uvolněno)")
 
-    # výchozí barva
+    # ── počáteční stav ──
     r, g, b = controller.get_rgb()
-
-    # počáteční stav PIR
-    pir_state = pir.poll()
+    pir_state  = pir.poll()
     pir_active = (pir_state == GPIO.HIGH)
 
     if pir_active:
@@ -135,46 +175,44 @@ def main_loop(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, pir: PirSenso
         strip.show_single_led_for_hour(now_dt, r, g, b)
         pot.set_led_color(r, g, b)
         last_pot_led_rgb = (r, g, b)
-        print("[PIR] Při startu detekován pohyb -> hodiny AKTIVNÍ")
+        print("[PIR] Při startu detekován pohyb → hodiny AKTIVNÍ")
     else:
         strip.clear()
         pot.set_led_color(0, 0, 0)
         last_pot_led_rgb = (0, 0, 0)
-        print("[PIR] Při startu bez pohybu -> hodiny ZHASNUTÉ")
+        print("[PIR] Při startu bez pohybu → hodiny ZHASNUTÉ")
 
     last_minute = None
 
     while True:
+        # ── Azure sync tick (nevyblokuje – HTTP jede ve vlastním vlákně) ──
         azure_sync.tick()
-        now_dt = datetime.datetime.now(TZ)
 
-        # PIR – aktuální stav přítomnosti
+        now_dt  = datetime.datetime.now(TZ)
         enabled = controller.is_enabled()
         use_pir = controller.is_pir_enabled()
         r, g, b = controller.get_rgb()
 
-        # Synchronizace LED v potenciometru při změně RGB z webu
+        # ── Synchronizace barvy LED v potíku při změně RGB z webu ──
+        # (jen když svítíme a nejsme v config režimu)
         if pir_active and not config_mode:
             desired_pot_rgb = (r, g, b)
-        else:
-            desired_pot_rgb = None
+            if desired_pot_rgb != last_pot_led_rgb:
+                pot.set_led_color(*desired_pot_rgb)
+                last_pot_led_rgb = desired_pot_rgb
 
-        if desired_pot_rgb is not None and desired_pot_rgb != last_pot_led_rgb:
-            pot.set_led_color(*desired_pot_rgb)
-            last_pot_led_rgb = desired_pot_rgb
-
-        pir_state = pir.poll()
-        motion_detected = (pir_state == GPIO.HIGH)
+        # ── PIR / enabled / use_pir → rozhodnutí, zda hodiny svítí ──
+        motion_detected = (pir.poll() == GPIO.HIGH)
         controller.set_motion(motion_detected)
 
         if not enabled:
-            current_active = False
+            current_active = False          # vypnuto z webu
         elif use_pir:
-            current_active = motion_detected
+            current_active = motion_detected  # řídí PIR
         else:
-            current_active = True
+            current_active = True           # vždy svítí (PIR přemostěn)
 
-        # změna stavu podle PIR / webu
+        # ── Reakce na změnu stavu aktivace hodin ──
         if current_active != pir_active:
             pir_active = current_active
 
@@ -183,46 +221,35 @@ def main_loop(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, pir: PirSenso
                 strip.show_single_led_for_hour(now_dt, r, g, b)
                 pot.set_led_color(r, g, b)
                 last_pot_led_rgb = (r, g, b)
-
-                if config_mode and config_channel is not None:
-                    if config_channel == "r":
-                        val, _, _ = controller.get_rgb()
-                    elif config_channel == "g":
-                        _, val, _ = controller.get_rgb()
-                    elif config_channel == "b":
-                        _, _, val = controller.get_rgb()
-                    else:
-                        val = 0
-
-                    epaper.refresh_config(config_channel, val)
+                # obnov displej (config screen nebo čas)
+                if config_mode and config_channel:
+                    ch_vals = {"r": r, "g": g, "b": b}
+                    epaper.refresh_config(config_channel, ch_vals[config_channel])
                 else:
                     epaper.refresh_time()
-
             else:
                 print("[PIR] Deaktivace hodin")
                 strip.clear()
                 pot.set_led_color(0, 0, 0)
                 last_pot_led_rgb = (0, 0, 0)
 
-        # pokud nejsou hodiny aktivní, nic dalšího neděláme
+        # ── Pokud hodiny nesví, zbytek smyčky přeskočíme ──
         if not pir_active:
             time.sleep(0.05)
             continue
 
-        # titulní režim: jedna LED podle času + refresh času na displeji po minutě
+        # ── Normální (non-config) provoz: LED sleduje čas, displej jednou za minutu ──
         if not config_mode:
-            r, g, b = controller.get_rgb()
             strip.show_single_led_for_hour(now_dt, r, g, b)
 
             if last_minute is None or now_dt.minute != last_minute:
                 last_minute = now_dt.minute
-                print(f"[TIME] MINUTA -> {last_minute}, refresh e-paper (čas)")
+                print(f"[TIME] MINUTA → {last_minute}, refresh e-paper")
                 epaper.refresh_time()
 
-        # tlačítko – hrana HIGH->LOW
+        # ── Tlačítko: detekce sestupné hrany (HIGH → LOW) ──
         cur = GPIO.input(BUTTON_PIN)
         if cur != last_button_state:
-            print("Tlačítko =", cur)
             if cur == GPIO.LOW:
                 print("[BTN] STISK")
                 handle_button_press(epaper, pot, strip, controller, azure_sync)
@@ -230,71 +257,63 @@ def main_loop(epaper: EpaperDisplay, pot: RGBPot, strip: LedStrip, pir: PirSenso
                 print("[BTN] UVOLNĚNÍ")
             last_button_state = cur
 
-        # config režim – stabilní hodnota po 1s
-        if config_mode and config_channel is not None:
-            val = pot.read_value_0_255()
+        # ── Config režim: přečti potenciometr a po POT_STABLE_SEC stabilní hodnoty ulož ──
+        if config_mode and config_channel:
+            val      = pot.read_value_0_255()
             now_mono = time.monotonic()
 
             if pot_raw_last is None:
-                pot_raw_last = val
-                pot_displayed_val = val
-                pot_last_change_time = now_mono
+                _reset_pot_tracking(val)
 
+            # pohyb nad prahem jitteru → resetuj čekací čas
             if abs(val - pot_raw_last) > POT_JITTER_TOL:
-                pot_raw_last = val
+                pot_raw_last         = val
                 pot_last_change_time = now_mono
 
+            # hodnota se stabilizovala → ulož ji
             if (now_mono - pot_last_change_time) >= POT_STABLE_SEC and val != pot_displayed_val:
                 pot_displayed_val = val
                 print(f"[POT] STABILNÍ hodnota {config_channel.upper()} = {val}")
 
                 cur_r, cur_g, cur_b = controller.get_rgb()
-
                 if config_channel == "r":
-                    controller.set_rgb(val, cur_g, cur_b)
-                elif config_channel == "g":
-                    controller.set_rgb(cur_r, val, cur_b)
-                elif config_channel == "b":
-                    controller.set_rgb(cur_r, cur_g, val)
-
-                r, g, b = controller.get_rgb()
-                strip.show_single_led_for_hour(
-                    datetime.datetime.now(TZ), r, g, b
-                )
-
-                if config_channel == "r":
+                    controller.set_rgb(val,   cur_g, cur_b)
                     pot.set_led_color(val, 0, 0)
                 elif config_channel == "g":
+                    controller.set_rgb(cur_r, val,   cur_b)
                     pot.set_led_color(0, val, 0)
                 elif config_channel == "b":
+                    controller.set_rgb(cur_r, cur_g, val)
                     pot.set_led_color(0, 0, val)
 
+                r, g, b = controller.get_rgb()
+                strip.show_single_led_for_hour(datetime.datetime.now(TZ), r, g, b)
                 epaper.refresh_config(config_channel, val)
 
-        time.sleep(0.02)
+        time.sleep(0.02)   # ~50 Hz
 
+
+# ──────────────────────────────────────────────
+# Inicializace a spuštění
+# ──────────────────────────────────────────────
 
 def main():
+    # Nejdřív synchronizuj systémový čas přes timeapi.io
     sync_time_at_start()
 
+    # GPIO setup – tlačítko s interním pull-up
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-    strip = LedStrip()
-    pot = RGBPot()
-    epaper = EpaperDisplay()
-    pir = PirSensor()
+    # Inicializace hardware modulů
+    strip      = LedStrip()
+    pot        = RGBPot()
+    epaper     = EpaperDisplay()
+    pir        = PirSensor()
     controller = SundialController()
     azure_sync = AzureSync(controller)
 
-    app = create_app(controller)
-    web_thread = threading.Thread(
-        target=lambda: app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False),
-        daemon=True
-    )
-    web_thread.start()
-    print("[WEB] Web běží na http://0.0.0.0:5000")
-
+    # Krátký selftest LED pásku (R → G → B)
     strip.selftest()
 
     try:
@@ -302,6 +321,7 @@ def main():
     except KeyboardInterrupt:
         print("Ukončuji...")
     finally:
+        # Čistý shutdown: zhasni LED, uvolni GPIO, uspí displej
         strip.clear()
         GPIO.cleanup()
         epaper.sleep()
