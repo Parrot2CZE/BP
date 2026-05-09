@@ -1,4 +1,4 @@
-# 🕯️ Interiérové sluneční hodiny
+# Interiérové sluneční hodiny
 
 Bakalářská práce – Raspberry Pi zařízení simulující sluneční hodiny pomocí LED pásku s 24 LED diodami. Čas je zobrazován jako pozice svítící LED na kruhu, barvu světla lze nastavit fyzicky pomocí RGB potenciometru nebo vzdáleně přes webové rozhraní. Zařízení je napojeno na Azure Functions pro cloudovou synchronizaci stavu.
 
@@ -38,27 +38,27 @@ Bakalářská práce – Raspberry Pi zařízení simulující sluneční hodiny
 ┌─────────────────────────────────────────────┐
 │              Raspberry Pi                   │
 │                                             │
-│  main.py ──► controller.py (sdílený stav)  │
+│  main.py ──► controller.py (sdílený stav)   │
 │      │                                      │
-│      ├──► led_strip.py   (WS2812B, 24 LED) │
-│      ├──► epaper_display.py (2.13" V4)     │
-│      ├──► rgb_pot.py     (PIM523 přes I2C) │
-│      ├──► pir_sensor.py  (HC-SR501)        │
-│      ├──► time_sync.py   (timeapi.io)      │
-│      ├──► webapp.py      (Flask :5000)     │
-│      └──► azure_sync.py  (polling vlákno)  │
+│      ├──► led_strip.py   (WS2812B, 24 LED)  │
+│      ├──► epaper_display.py (2.13" V4)      │
+│      ├──► rgb_pot.py     (PIM523 přes I2C)  │
+│      ├──► pir_sensor.py  (HC-SR501)         │
+│      ├──► time_sync.py   (timeapi.io)       │
+│      ├──► webapp.py      (Flask :5000)      │
+│      └──► azure_sync.py  (polling vlákno)   │
 └──────────────────┬──────────────────────────┘
                    │ HTTPS REST
 ┌──────────────────▼──────────────────────────┐
 │           Azure Functions                   │
 │                                             │
-│  GET  /api/state   – stažení konfigurace   │
-│  POST /api/state   – push živého stavu     │
-│  POST /api/rgb     – nastavení barvy       │
-│  POST /api/enabled – zapnout / vypnout     │
-│  POST /api/pir     – PIR režim on/off      │
+│  GET  /api/state   – stažení konfigurace    │
+│  POST /api/state   – push živého stavu      │
+│  POST /api/rgb     – nastavení barvy        │
+│  POST /api/enabled – zapnout / vypnout      │
+│  POST /api/pir     – PIR režim on/off       │
 │                                             │
-│  Stav uložen v Azure Table Storage         │
+│  Stav uložen v Azure Table Storage          │
 └─────────────────────────────────────────────┘
          │
 ┌────────▼────────────────────────────────────┐
